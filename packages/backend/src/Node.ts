@@ -1,11 +1,26 @@
 import * as WebSocket from 'ws';
 import * as EventEmitter from 'events';
 
-import { noop, timestamp, Maybe, Types, idGenerator, blockAverage } from '@dotstats/common';
-import { parseMessage, getBestBlock, Message, BestBlock, SystemInterval } from './message';
+import { noop, timestamp, idGenerator, Maybe, Types, NumStats } from '@dotstats/common';
+import { BlockHash, BlockNumber, ConsensusView } from "@dotstats/common/build/types";
+import {
+  parseMessage,
+  getBestBlock,
+  Message,
+  BestBlock,
+  SystemInterval,
+  AfgFinalized,
+  AfgReceivedPrecommit,
+  AfgReceivedPrevote,
+  AfgAuthoritySet,
+} from './message';
 import { locate, Location } from './location';
+import MeanList from './MeanList';
+import Block from './Block';
 
 const BLOCK_TIME_HISTORY = 10;
+const MEMORY_RECORDS = 20;
+const CPU_RECORDS = 20;
 const TIMEOUT = (1000 * 60 * 1) as Types.Milliseconds; // 1 minute
 
 const nextId = idGenerator<Types.NodeId>();
@@ -21,14 +36,18 @@ export default class Node {
   public readonly chain: Types.ChainLabel;
   public readonly implementation: Types.NodeImplementation;
   public readonly version: Types.NodeVersion;
+  public readonly address: Maybe<Types.Address>;
+  public readonly networkId: Maybe<Types.NetworkId>;
+  public readonly authority: boolean;
 
   public readonly events = new EventEmitter() as EventEmitter & NodeEvents;
 
+  public networkState: Maybe<Types.NetworkState> = null;
   public location: Maybe<Location> = null;
   public lastMessage: Types.Timestamp;
   public config: string;
-  public best = '' as Types.BlockHash;
-  public height = 0 as Types.BlockNumber;
+  public best = Block.ZERO;
+  public finalized = Block.ZERO;
   public latency = 0 as Types.Milliseconds;
   public blockTime = 0 as Types.Milliseconds;
   public blockTimestamp = 0 as Types.Timestamp;
@@ -36,13 +55,21 @@ export default class Node {
 
   private peers = 0 as Types.PeerCount;
   private txcount = 0 as Types.TransactionCount;
+  private memory = new MeanList<Types.MemoryUse>();
+  private cpu = new MeanList<Types.CPUUse>();
+  private upload = new MeanList<Types.BytesPerSecond>();
+  private download = new MeanList<Types.BytesPerSecond>();
+  private chartstamps = new MeanList<Types.Timestamp>();
 
   private readonly ip: string;
   private readonly socket: WebSocket;
-  private blockTimes: Array<number> = new Array(BLOCK_TIME_HISTORY);
+  private blockTimes = new NumStats<Types.Milliseconds>(BLOCK_TIME_HISTORY);
   private lastBlockAt: Maybe<Date> = null;
   private pingStart = 0 as Types.Timestamp;
   private throttle = false;
+
+  private authorities: Types.Authorities = [] as Types.Authorities;
+  private authoritySetId: Types.AuthoritySetId = 0 as Types.AuthoritySetId;
 
   constructor(
     ip: string,
@@ -52,6 +79,9 @@ export default class Node {
     config: string,
     implentation: Types.NodeImplementation,
     version: Types.NodeVersion,
+    address: Maybe<Types.Address>,
+    networkId: Maybe<Types.NetworkId>,
+    authority: boolean,
     messages: Array<Message>,
   ) {
     this.ip = ip;
@@ -61,6 +91,9 @@ export default class Node {
     this.config = config;
     this.implementation = implentation;
     this.version = version;
+    this.address = address;
+    this.authority = authority;
+    this.networkId = networkId;
     this.lastMessage = timestamp();
     this.socket = socket;
 
@@ -91,10 +124,12 @@ export default class Node {
       this.pingStart = 0 as Types.Timestamp;
     });
 
-    // Handle cached messages
-    for (const message of messages) {
-      this.onMessage(message);
-    }
+    process.nextTick(() => {
+      // Handle cached messages
+      for (const message of messages) {
+        this.onMessage(message);
+      }
+    });
 
     locate(ip).then((location) => {
       if (!location) {
@@ -126,9 +161,9 @@ export default class Node {
         if (message.msg === "system.connected") {
           cleanup();
 
-          const { name, chain, config, implementation, version } = message;
+          const { name, chain, config, implementation, version, pubkey, authority, network_id: networkId } = message;
 
-          resolve(new Node(ip, socket, name, chain, config, implementation, version, messages));
+          resolve(new Node(ip, socket, name, chain, config, implementation, version, pubkey, networkId, authority === true, messages));
         } else {
           if (messages.length === 10) {
             messages.shift();
@@ -160,15 +195,22 @@ export default class Node {
   }
 
   public nodeDetails(): Types.NodeDetails {
-    return [this.name, this.implementation, this.version];
+    const authority = this.authority ? this.address : null;
+    const addr = this.address ? this.address : '' as Types.Address;
+
+    return [this.name, this.implementation, this.version, authority, this.networkId, addr];
   }
 
   public nodeStats(): Types.NodeStats {
     return [this.peers, this.txcount];
   }
 
+  public nodeHardware(): Types.NodeHardware {
+    return [this.memory.get(), this.cpu.get(), this.upload.get(), this.download.get(), this.chartstamps.get()];
+  }
+
   public blockDetails(): Types.BlockDetails {
-    return [this.height, this.best, this.blockTime, this.blockTimestamp, this.propagationTime];
+    return [this.best.number, this.best.hash, this.blockTime, this.blockTimestamp, this.propagationTime];
   }
 
   public nodeLocation(): Maybe<Types.NodeLocation> {
@@ -178,7 +220,7 @@ export default class Node {
   }
 
   public get average(): Types.Milliseconds {
-    return blockAverage(this.blockTimes);
+    return this.blockTimes.average();
   }
 
   public get localBlockAt(): Types.Milliseconds {
@@ -209,10 +251,37 @@ export default class Node {
     if (message.msg === 'system.interval') {
       this.onSystemInterval(message);
     }
+
+    if (message.msg === 'afg.finalized') {
+      this.onAfgFinalized(message);
+    }
+    if (message.msg === 'afg.received_precommit') {
+      this.onAfgReceivedPrecommit(message);
+    }
+    if (message.msg === 'afg.received_prevote') {
+      this.onAfgReceivedPrevote(message);
+    }
+    if (message.msg === 'afg.authority_set') {
+      this.onAfgAuthoritySet(message);
+    }
   }
 
   private onSystemInterval(message: SystemInterval) {
-    const { peers, txcount } = message;
+    const {
+      network_state,
+      peers,
+      txcount,
+      cpu,
+      memory,
+      bandwidth_download: download,
+      bandwidth_upload: upload,
+      finalized_height: finalized,
+      finalized_hash: finalizedHash
+    } = message;
+
+    if (this.networkState !== network_state && network_state) {
+      this.networkState = network_state;
+    };
 
     if (this.peers !== peers || this.txcount !== txcount) {
       this.peers = peers;
@@ -220,6 +289,81 @@ export default class Node {
 
       this.events.emit('stats');
     }
+
+    if (finalized != null && finalizedHash != null && finalized > this.finalized.number) {
+      this.finalized = new Block(finalized, finalizedHash);
+
+      this.events.emit('finalized');
+    }
+
+    if (cpu != null && memory != null) {
+      const cpuChange = this.cpu.push(cpu);
+      const memChange = this.memory.push(memory);
+
+      const uploadChange = this.upload.push(upload);
+      const downloadChange = this.download.push(download);
+
+      const stampChange = this.chartstamps.push(timestamp());
+
+      if (cpuChange || memChange || uploadChange || downloadChange || stampChange) {
+        this.events.emit('hardware');
+      }
+    }
+  }
+
+  public isAuthority(): boolean {
+    return this.authority;
+  }
+
+  private onAfgReceivedPrecommit(message: AfgReceivedPrecommit) {
+    const {
+      target_number: targetNumber,
+      target_hash: targetHash,
+    } = message;
+    const voter = this.extractVoter(message.voter);
+    const number = parseInt(String(targetNumber), 10) as Types.BlockNumber;
+    this.events.emit('afg-received-precommit', number, targetHash, voter);
+  }
+
+  private onAfgReceivedPrevote(message: AfgReceivedPrevote) {
+    const {
+      target_number: targetNumber,
+      target_hash: targetHash,
+    } = message;
+    const voter = this.extractVoter(message.voter);
+    const number = parseInt(String(targetNumber), 10) as Types.BlockNumber;
+    this.events.emit('afg-received-prevote', number, targetHash, voter);
+  }
+
+  private onAfgAuthoritySet(message: AfgAuthoritySet) {
+    const {
+      authority_set_id: authoritySetId,
+      hash,
+      number,
+    } = message;
+
+    // we manually parse the authorities message, because the array was formatted as a
+    // string by substrate before sending it.
+    const authorities = JSON.parse(String(message.authorities)) as Types.Authorities;
+
+    if (JSON.stringify(this.authorities) !== String(message.authorities) ||
+        this.authoritySetId !== authoritySetId) {
+      const no = parseInt(String(number), 10) as Types.BlockNumber;
+      this.events.emit('authority-set-changed', authorities, authoritySetId, no, hash);
+    }
+  }
+
+  private onAfgFinalized(message: AfgFinalized) {
+    const {
+      finalized_number: finalizedNumber,
+      finalized_hash: finalizedHash,
+    } = message;
+    const number = parseInt(String(finalizedNumber), 10) as Types.BlockNumber;
+    this.events.emit('afg-finalized', number, finalizedHash);
+  }
+
+  private extractVoter(message_voter: String): Types.Address {
+    return String(message_voter.replace(/"/g, '')) as Types.Address;
   }
 
   private updateLatency(now: Types.Timestamp) {
@@ -243,14 +387,13 @@ export default class Node {
   private updateBestBlock(update: BestBlock) {
     const { height, ts: time, best } = update;
 
-    if (this.best !== best && this.height <= height) {
+    if (this.best.hash !== best && this.best.number <= height) {
       const blockTime = this.getBlockTime(time);
 
-      this.best = best;
-      this.height = height;
+      this.best = new Block(height, best);
       this.blockTimestamp = timestamp();
       this.lastBlockAt = time;
-      this.blockTimes[height % BLOCK_TIME_HISTORY] = blockTime;
+      this.blockTimes.push(blockTime);
       this.blockTime = blockTime;
 
       if (blockTime > 100) {

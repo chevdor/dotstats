@@ -1,10 +1,13 @@
+import * as http from 'http';
+import * as url from 'url';
 import * as WebSocket from 'ws';
 import Node from './Node';
 import Feed from './Feed';
 import Aggregator from './Aggregator';
+import {Types} from '@dotstats/common';
 
-const WS_PORT_TELEMETRY_SERVER = 1024;
-const WS_PORT_FEED_SERVER = 8080;
+const WS_PORT_TELEMETRY_SERVER = Number(process.env.TELEMETRY_SERVER || 1024);
+const WS_PORT_FEED_SERVER = Number(process.env.FEED_SERVER || 8080);
 
 const aggregator = new Aggregator();
 
@@ -48,3 +51,27 @@ telemetryFeed.on('connection', (socket: WebSocket) => {
   aggregator.addFeed(new Feed(socket));
 });
 
+http.createServer((request, response) => {
+  const incoming_url = request.url || "";
+  const parsed_url = url.parse(incoming_url, true);
+  const path = decodeURI(parsed_url.path || "");
+  if (path.startsWith("/network_state/")) {
+    const [chainLabel, strNodeId] = path.split('/').slice(2);
+    const chain = aggregator.getExistingChain(chainLabel as Types.ChainLabel);
+    if (chain) {
+      const nodeList = Array.from(chain.nodeList());
+      const nodeId = Number(strNodeId);
+      const node = nodeList.filter((node) => node.id == nodeId)[0];
+      if (node && node.networkState) {
+        const { networkState } = node;
+
+        response.writeHead(200, {"Content-Type": "application/json"});
+        response.write(typeof networkState === 'string' ? networkState : JSON.stringify(networkState));
+      } else {
+        response.writeHead(404, {"Content-Type": "text/plain"});
+        response.write("Node has disconnected or has not submitted its network state yet");
+      }
+    }
+  }
+  response.end();
+}).listen(8081);

@@ -2,7 +2,8 @@ import * as EventEmitter from 'events';
 import Node from './Node';
 import Feed from './Feed';
 import FeedSet from './FeedSet';
-import { Maybe, Types, FeedMessage, blockAverage } from '@dotstats/common';
+import Block from './Block';
+import { Maybe, Types, NumStats } from '@dotstats/common';
 
 const BLOCK_TIME_HISTORY = 10;
 
@@ -14,10 +15,13 @@ export default class Chain {
   public readonly label: Types.ChainLabel;
 
   public height = 0 as Types.BlockNumber;
+  public finalized = Block.ZERO;
   public blockTimestamp = 0 as Types.Timestamp;
 
-  private blockTimes: Array<number> = new Array(BLOCK_TIME_HISTORY).fill(0);
+  private blockTimes = new NumStats<Types.Milliseconds>(BLOCK_TIME_HISTORY);
   private averageBlockTime: Maybe<Types.Milliseconds> = null;
+
+  public lastBroadcastedAuthoritySetInfo: Maybe<Types.AuthoritySetInfo> = null;
 
   constructor(label: Types.ChainLabel) {
     this.label = label;
@@ -33,20 +37,56 @@ export default class Chain {
     this.nodes.add(node);
     this.feeds.broadcast(Feed.addedNode(node));
 
-    node.events.once('disconnect', () => {
-      node.events.removeAllListeners();
-
-      this.nodes.delete(node);
-      this.feeds.broadcast(Feed.removedNode(node));
-
-      this.events.emit('disconnect', this.nodeCount);
-    });
+    node.events.once('disconnect', () => this.removeNode(node));
 
     node.events.on('block', () => this.updateBlock(node));
+    node.events.on('finalized', () => this.updateFinalized(node));
+
+    node.events.on('afg-finalized', (finalizedNumber, finalizedHash) => this.feeds.each(
+      f => f.sendConsensusMessage(Feed.afgFinalized(node, finalizedNumber, finalizedHash))
+    ));
+    node.events.on('afg-received-prevote', (finalizedNumber, finalizedHash, voter) => this.feeds.each(
+      f => f.sendConsensusMessage(Feed.afgReceivedPrevote(node, finalizedNumber, finalizedHash, voter))
+    ));
+    node.events.on('afg-received-precommit', (finalizedNumber, finalizedHash, voter) => this.feeds.each(
+      f => f.sendConsensusMessage(Feed.afgReceivedPrecommit(node, finalizedNumber, finalizedHash, voter))
+    ));
+    node.events.on('authority-set-changed', (authorities, authoritySetId, blockNumber, blockHash) => {
+      let newSet;
+      if (this.lastBroadcastedAuthoritySetInfo == null) {
+        newSet = true;
+      } else {
+        const [lastBroadcastedAuthoritySetId] = this.lastBroadcastedAuthoritySetInfo;
+        newSet = authoritySetId !== lastBroadcastedAuthoritySetId;
+      }
+
+      if (node.isAuthority() && newSet) {
+        const addr = node.address != null ? node.address : "" as Types.Address;
+        const set = [authoritySetId, authorities, addr, blockNumber, blockHash] as Types.AuthoritySetInfo;
+        this.feeds.broadcast(Feed.afgAuthoritySet(set));
+        this.lastBroadcastedAuthoritySetInfo = set;
+      }
+    });
+
     node.events.on('stats', () => this.feeds.broadcast(Feed.stats(node)));
+    node.events.on('hardware', () => this.feeds.broadcast(Feed.hardware(node)));
     node.events.on('location', (location) => this.feeds.broadcast(Feed.locatedNode(node, location)));
 
     this.updateBlock(node);
+    this.updateFinalized(node);
+  }
+
+  public removeNode(node: Node) {
+    node.events.removeAllListeners();
+
+    this.nodes.delete(node);
+    this.feeds.broadcast(Feed.removedNode(node));
+
+    this.events.emit('disconnect', this.nodeCount);
+
+    if (this.height === node.best.number) {
+      this.downgradeBlock();
+    }
   }
 
   public addFeed(feed: Feed) {
@@ -57,9 +97,15 @@ export default class Chain {
 
     feed.sendMessage(Feed.timeSync());
     feed.sendMessage(Feed.bestBlock(this.height, this.blockTimestamp, this.averageBlockTime));
+    feed.sendMessage(Feed.bestFinalizedBlock(this.finalized));
+
+    if (this.lastBroadcastedAuthoritySetInfo != null) {
+      feed.sendMessage(Feed.afgAuthoritySet(this.lastBroadcastedAuthoritySetInfo));
+    }
 
     for (const node of this.nodes.values()) {
       feed.sendMessage(Feed.addedNode(node));
+      feed.sendMessage(Feed.finalized(node));
     }
   }
 
@@ -80,9 +126,11 @@ export default class Chain {
   }
 
   private updateBlock(node: Node) {
-    if (node.height > this.height) {
+    const height = node.best.number;
+
+    if (height > this.height) {
       // New best block
-      const { height, blockTimestamp } = node;
+      const { blockTimestamp } = node;
 
       if (this.blockTimestamp) {
         this.updateAverageBlockTime(height, blockTimestamp);
@@ -99,20 +147,54 @@ export default class Chain {
       this.feeds.broadcast(Feed.bestBlock(this.height, this.blockTimestamp, this.averageBlockTime));
 
       console.log(`[${this.label}] New block ${this.height}`);
-    } else if (node.height === this.height) {
+    } else if (height === this.height) {
       // Caught up to best block
       node.propagationTime = (node.blockTimestamp - this.blockTimestamp) as Types.PropagationTime;
     }
 
     this.feeds.broadcast(Feed.imported(node));
 
-    console.log(`[${this.label}] ${node.name} imported ${node.height}, block time: ${node.blockTime / 1000}s, average: ${node.average / 1000}s | latency ${node.latency}`);
+    console.log(`[${this.label}] ${node.name} imported ${height}, block time: ${node.blockTime / 1000}s, average: ${node.average / 1000}s | latency ${node.latency}`);
+  }
+
+  private downgradeBlock() {
+    let height = 0 as Types.BlockNumber;
+    let finalized = Block.ZERO;
+
+    for (const node of this.nodes) {
+      if (this.height === node.best.number) {
+        return;
+      }
+
+      if (node.best.number > height) {
+        height = node.best.number;
+      }
+
+      if (node.finalized.number > finalized.number) {
+        finalized = node.finalized;
+      }
+    }
+
+    this.height = height;
+    this.finalized = finalized;
+    this.feeds.broadcast(Feed.bestBlock(this.height, this.blockTimestamp, this.averageBlockTime));
+    this.feeds.broadcast(Feed.bestFinalizedBlock(this.finalized));
+  }
+
+  private updateFinalized(node: Node) {
+    if (node.finalized.gt(this.finalized)) {
+      this.finalized = node.finalized;
+
+      this.feeds.broadcast(Feed.bestFinalizedBlock(this.finalized));
+    }
+
+    this.feeds.broadcast(Feed.finalized(node));
   }
 
   private updateAverageBlockTime(height: Types.BlockNumber, now: Types.Timestamp) {
-    this.blockTimes[height % BLOCK_TIME_HISTORY] = now - this.blockTimestamp;
+    this.blockTimes.push((now - this.blockTimestamp) as Types.Milliseconds);
 
     // We are guaranteed that count > 0
-    this.averageBlockTime = blockAverage(this.blockTimes);
+    this.averageBlockTime = this.blockTimes.average();
   }
 }

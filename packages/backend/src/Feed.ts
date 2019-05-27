@@ -2,6 +2,7 @@ import * as WebSocket from 'ws';
 import * as EventEmitter from 'events';
 import Node from './Node';
 import Chain from './Chain';
+import Block from './Block';
 import { VERSION, timestamp, Maybe, FeedMessage, Types, idGenerator } from '@dotstats/common';
 import { Location } from './location';
 
@@ -17,6 +18,7 @@ export default class Feed {
   private socket: WebSocket;
   private messages: Array<FeedMessage.Message> = [];
   private waitingForPong = false;
+  private sendFinality = false;
 
   constructor(socket: WebSocket) {
     this.id = nextId();
@@ -42,10 +44,17 @@ export default class Feed {
     };
   }
 
+  public static bestFinalizedBlock(block: Block): FeedMessage.Message {
+    return {
+      action: Actions.BestFinalized,
+      payload: [block.number, block.hash]
+    };
+  }
+
   public static addedNode(node: Node): FeedMessage.Message {
     return {
       action: Actions.AddedNode,
-      payload: [node.id, node.nodeDetails(), node.nodeStats(), node.blockDetails(), node.nodeLocation()]
+      payload: [node.id, node.nodeDetails(), node.nodeStats(), node.nodeHardware(), node.blockDetails(), node.nodeLocation()]
     };
   }
 
@@ -70,10 +79,67 @@ export default class Feed {
     };
   }
 
+  public static finalized(node: Node): FeedMessage.Message {
+    return {
+      action: Actions.FinalizedBlock,
+      payload: [node.id, node.finalized.number, node.finalized.hash]
+    };
+  }
+
   public static stats(node: Node): FeedMessage.Message {
     return {
       action: Actions.NodeStats,
       payload: [node.id, node.nodeStats()]
+    };
+  }
+
+  public static afgFinalized(node: Node, finalizedNumber: Types.BlockNumber, finalizedHash: Types.BlockHash): FeedMessage.Message {
+    const addr = node.address != null ? node.address : "" as Types.Address;
+    return {
+      action: Actions.AfgFinalized,
+      payload: [addr, finalizedNumber, finalizedHash]
+    };
+  }
+
+  public static afgReceivedPrevote(
+    node: Node,
+    targetNumber: Types.BlockNumber,
+    targetHash: Types.BlockHash,
+    voter: Types.Address
+  ): FeedMessage.Message {
+    const addr = node.address != null ? node.address : "" as Types.Address;
+    return {
+      action: Actions.AfgReceivedPrevote,
+      payload: [addr, targetNumber, targetHash, voter]
+    };
+  }
+
+  public static afgReceivedPrecommit(
+    node: Node,
+    targetNumber: Types.BlockNumber,
+    targetHash: Types.BlockHash,
+    voter: Types.Address
+  ): FeedMessage.Message {
+    const addr = node.address != null ? node.address : "" as Types.Address;
+    return {
+      action: Actions.AfgReceivedPrecommit,
+      payload: [addr, targetNumber, targetHash, voter]
+    };
+  }
+
+  public static afgAuthoritySet(
+    authoritySetInfo: Types.AuthoritySetInfo,
+  ): FeedMessage.Message {
+    return {
+      action: Actions.AfgAuthoritySet,
+      payload: authoritySetInfo,
+    };
+  }
+
+  public static hardware(node: Node): FeedMessage.Message {
+    return {
+      action: Actions.NodeHardware,
+      payload: [node.id, node.nodeHardware()]
     };
   }
 
@@ -133,6 +199,14 @@ export default class Feed {
     }
   }
 
+  public sendConsensusMessage(message: FeedMessage.Message) {
+    if (!this.sendFinality) {
+      return;
+    }
+
+    this.sendMessage(message);
+  }
+
   public ping() {
     if (this.waitingForPong) {
       this.disconnect();
@@ -164,6 +238,14 @@ export default class Feed {
         }
 
         this.events.emit('subscribe', payload as Types.ChainLabel);
+        break;
+
+      case 'send-finality':
+        this.sendFinality = true;
+        break;
+
+      case 'no-more-finality':
+        this.sendFinality = false;
         break;
 
       case 'ping':

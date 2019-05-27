@@ -34,41 +34,91 @@ interface MessageBase {
 }
 
 export interface BestBlock {
-  best: Types.BlockHash,
-  height: Types.BlockNumber,
-  ts: Date,
+  best: Types.BlockHash;
+  height: Types.BlockNumber;
+  ts: Date;
 }
 
-interface SystemConnected {
-  msg: 'system.connected',
-  name: Types.NodeName,
-  chain: Types.ChainLabel,
-  config: string,
-  implementation: Types.NodeImplementation,
-  version: Types.NodeVersion,
+export interface AfgFinalized {
+  ts: Date;
+  finalized_number: Types.BlockNumber;
+  finalized_hash: Types.BlockHash;
+  msg: 'afg.finalized';
+}
+
+export interface AfgReceived {
+  ts: Date;
+  target_number: Maybe<Types.BlockNumber>;
+  target_hash: Maybe<Types.BlockHash>;
+  voter: Types.Address;
+}
+
+export interface AfgReceivedPrecommit extends AfgReceived {
+  msg: 'afg.received_precommit';
+}
+
+export interface AfgReceivedPrevote extends AfgReceived {
+  msg: 'afg.received_prevote';
+}
+
+export interface AfgReceivedCommit extends AfgReceived {
+  msg: 'afg.received_commit';
+}
+
+export interface AfgAuthoritySet {
+  msg: 'afg.authority_set';
+  ts: Date;
+  authorities: Types.Authorities;
+  authority_set_id: Types.AuthoritySetId;
+  number: Types.BlockNumber;
+  hash: Types.BlockHash;
+}
+
+export interface SystemConnected {
+  msg: 'system.connected';
+  name: Types.NodeName;
+  chain: Types.ChainLabel;
+  config: string;
+  implementation: Types.NodeImplementation;
+  version: Types.NodeVersion;
+  pubkey: Maybe<Types.Address>;
+  authority: Maybe<boolean>;
+  network_id: Maybe<Types.NetworkId>;
 }
 
 export interface SystemInterval extends BestBlock {
-  msg: 'system.interval',
-  txcount: Types.TransactionCount,
-  peers: Types.PeerCount,
-  status: 'Idle' | string, // TODO: 'Idle' | ...?
+  msg: 'system.interval';
+  network_state: Maybe<Types.NetworkState>;
+  txcount: Types.TransactionCount;
+  peers: Types.PeerCount;
+  memory: Maybe<Types.MemoryUse>;
+  cpu: Maybe<Types.CPUUse>;
+  status: 'Idle' | string; // TODO: 'Idle' | ...?
+  bandwidth_upload: Maybe<Types.BytesPerSecond>;
+  bandwidth_download: Maybe<Types.BytesPerSecond>;
+  finalized_height: Maybe<Types.BlockNumber>;
+  finalized_hash: Maybe<Types.BlockHash>;
 }
 
-interface NodeStart extends BestBlock {
-  msg: 'node.start',
+export interface NodeStart extends BestBlock {
+  msg: 'node.start';
 }
 
-interface BlockImport extends BestBlock {
-  msg: 'block.import',
+export interface BlockImport extends BestBlock {
+  msg: 'block.import';
 }
 
 // Union type
 export type Message = MessageBase & (
-  SystemConnected |
-  SystemInterval  |
-  NodeStart       |
-  BlockImport
+  | SystemConnected
+  | SystemInterval
+  | NodeStart
+  | BlockImport
+  | AfgFinalized
+  | AfgReceivedPrecommit
+  | AfgReceivedPrevote
+  | AfgReceivedCommit
+  | AfgAuthoritySet
 );
 
 

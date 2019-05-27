@@ -2,7 +2,7 @@ import Chain from './Chain';
 import Node from './Node';
 import Feed from './Feed';
 import FeedSet from './FeedSet';
-import { Types, FeedMessage, timestamp } from '@dotstats/common';
+import { Types, FeedMessage, Maybe, timestamp } from '@dotstats/common';
 
 export default class Aggregator {
   private readonly chains = new Map<Types.ChainLabel, Chain>();
@@ -33,8 +33,8 @@ export default class Aggregator {
       const chain = this.chains.get(label);
 
       if (chain) {
-        chain.addFeed(feed);
         feed.sendMessage(Feed.subscribedTo(label));
+        chain.addFeed(feed);
       }
     });
 
@@ -46,6 +46,28 @@ export default class Aggregator {
         feed.sendMessage(Feed.unsubscribedFrom(label));
       }
     });
+
+    feed.events.on('subscribe-consensus-info', (label: Types.ChainLabel) => {
+      const chain = this.chains.get(label);
+
+      if (chain) {
+        feed.sendMessage(Feed.subscribedTo(label));
+        chain.addFeed(feed);
+      }
+    });
+
+    feed.events.on('unsubscribe-consensus-info', (label: Types.ChainLabel) => {
+      const chain = this.chains.get(label);
+
+      if (chain) {
+        chain.removeFeed(feed);
+        feed.sendMessage(Feed.unsubscribedFrom(label));
+      }
+    });
+  }
+
+  public getExistingChain(label: Types.ChainLabel) : Maybe<Chain> {
+    return this.chains.get(label);
   }
 
   private getChain(label: Types.ChainLabel): Chain {

@@ -2,8 +2,8 @@ import * as React from 'react';
 import { Connection } from '../Connection';
 import { Icon } from './Icon';
 import { Types, Maybe } from '@dotstats/common';
+import stable from 'stable';
 
-import chainIcon from '../icons/link.svg';
 import githubIcon from '../icons/mark-github.svg';
 import './Chains.css';
 
@@ -24,11 +24,10 @@ export class Chains extends React.Component<Chains.Props, {}> {
   public render() {
     return (
       <div className="Chains">
-        <Icon src={chainIcon} alt="Observed Chain" />
         {
           this.chains.map((chain) => this.renderChain(chain))
         }
-        <a className="Chains-fork-me" href="https://github.com/polkadot-js/dotstats" target="_blank">
+        <a className="Chains-fork-me" href="https://github.com/paritytech/substrate-telemetry" target="_blank">
           <Icon src={githubIcon} alt="Fork Me!" />
         </a>
       </div>
@@ -50,11 +49,11 @@ export class Chains extends React.Component<Chains.Props, {}> {
   }
 
   private get chains(): ChainData[] {
-    return Array
-      .from(this.props.chains.entries())
-      .sort((a, b) => {
-        return b[1] - a[1];
-      })
+    return stable
+      .inplace(
+        Array.from(this.props.chains.entries()),
+        (a, b) => b[1] - a[1]
+      )
       .map(([label, nodeCount]) => ({ label, nodeCount }));
   }
 
@@ -62,5 +61,6 @@ export class Chains extends React.Component<Chains.Props, {}> {
     const connection = await this.props.connection;
 
     connection.subscribe(chain);
+    connection.resetConsensus();
   }
 }

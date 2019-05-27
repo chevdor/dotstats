@@ -1,29 +1,75 @@
 import * as React from 'react';
-import { Types } from '@dotstats/common';
+import { Types, SortedCollection } from '@dotstats/common';
 import { Chains, Chain, Ago, OfflineIndicator } from './components';
 import { Connection } from './Connection';
-import { State } from './state';
+import { PersistentObject, PersistentSet } from './persist';
+import { State, Node } from './state';
 
 import './App.css';
 
 export default class App extends React.Component<{}, State> {
-  public state: State = {
-    status: 'offline',
-    best: 0 as Types.BlockNumber,
-    blockTimestamp: 0 as Types.Timestamp,
-    blockAverage: null,
-    timeDiff: 0 as Types.Milliseconds,
-    subscribed: null,
-    chains: new Map(),
-    nodes: new Map()
-  };
-
-  private connection: Promise<Connection>;
+  public state: State;
+  private readonly settings: PersistentObject<State.Settings>;
+  private readonly pins: PersistentSet<Types.NodeName>;
+  private readonly connection: Promise<Connection>;
 
   constructor(props: {}) {
     super(props);
 
-    this.connection = Connection.create((changes) => {
+    this.settings = new PersistentObject(
+      'settings',
+      {
+        validator: true,
+        location: true,
+        implementation: true,
+        networkId: false,
+        peers: true,
+        txs: true,
+        cpu: true,
+        mem: true,
+        upload: false,
+        download: false,
+        blocknumber: true,
+        blockhash: true,
+        blocktime: true,
+        finalized: false,
+        finalizedhash: false,
+        blockpropagation: true,
+        blocklasttime: false,
+        networkstate: false,
+      },
+      (settings) => this.setState({ settings })
+    );
+
+    this.pins = new PersistentSet<Types.NodeName>('pinned_names', (pins) => {
+      const { nodes } = this.state;
+
+      nodes.mutEachAndSort((node) => node.setPinned(pins.has(node.name)));
+
+      this.setState({ nodes, pins });
+    });
+
+    this.state = {
+      status: 'offline',
+      best: 0 as Types.BlockNumber,
+      finalized: 0 as Types.BlockNumber,
+      consensusInfo: new Array() as Types.ConsensusInfo,
+      displayConsensusLoadingScreen: true,
+      authorities: new Array() as Types.Authorities,
+      authoritySetId: null,
+      sendFinality: false,
+      blockTimestamp: 0 as Types.Timestamp,
+      blockAverage: null,
+      timeDiff: 0 as Types.Milliseconds,
+      subscribed: null,
+      chains: new Map(),
+      nodes: new SortedCollection(Node.compare),
+      settings: this.settings.raw(),
+      pins: this.pins.get(),
+      tabChanged: false,
+    };
+
+    this.connection = Connection.create(this.pins, (changes) => {
       if (changes) {
         this.setState(changes);
       }
@@ -41,7 +87,7 @@ export default class App extends React.Component<{}, State> {
       return (
         <div className="App App-no-telemetry">
           <OfflineIndicator status={status} />
-          Waiting for telemetry data...
+          Waiting for telemetry&hellip;
         </div>
       );
     }
@@ -50,9 +96,15 @@ export default class App extends React.Component<{}, State> {
       <div className="App">
         <OfflineIndicator status={status} />
         <Chains chains={chains} subscribed={subscribed} connection={this.connection} />
-        <Chain appState={this.state} />
+        <Chain appState={this.state} connection={this.connection} settings={this.settings} pins={this.pins} />
       </div>
     );
+  }
+
+  public componentDidUpdate() {
+    if (this.state.tabChanged === true) {
+      this.setState({tabChanged: false});
+    }
   }
 
   public componentWillMount() {
