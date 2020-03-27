@@ -4,20 +4,27 @@ MAINTAINER "chevdor@gmail.com"
 
 WORKDIR /app
 
+COPY . .
+
 RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add - && \
     echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list && \
     curl -sL https://deb.nodesource.com/setup_10.x | bash - && \
     apt-get update -y && \
-    apt-get upgrade -y && \
-    apt-get -y install python g++ make openssl git pdftk nodejs yarn wget && \
-    apt-get clean && apt-get autoremove --purge && \
-    wget -qO- https://raw.githubusercontent.com/creationix/nvm/v0.33.11/install.sh | bash && \
+    # apt-get upgrade -y && \
+    apt-get -y install yarn wget && \
+    # apt-get -y install python g++ make openssl git pdftk nodejs && \
+    apt-get clean && apt-get autoremove --purge
+    
+RUN wget -qO- https://raw.githubusercontent.com/creationix/nvm/v0.33.11/install.sh | bash && \
     export NVM_DIR="$HOME/.nvm" && \
-    chmod u+x "$NVM_DIR/nvm.sh" && \
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" && \
-    nvm install `cat .nvmrc`
+    chmod u+x "$NVM_DIR/nvm.sh"
 
-COPY . .
+RUN export NVM_DIR="$HOME/.nvm" && \
+    "$NVM_DIR/nvm.sh" install `cat .nvmrc` && \
+    
+RUN export NVM_DIR="$HOME/.nvm" && \
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    
 RUN yarn && \
     yarn build:common && \
     yarn build:backend && \
