@@ -18,7 +18,11 @@
     "check:backend": "tsc -p packages/backend --noEmit",
     "build:common": "tsc -p packages/common",
     "check:common": "tsc -p packages/common --noEmit",
+<<<<<<< HEAD
     "cleanup": "rm -rf packages/frontend/build packages/backend/build packages/common/build node_modules packages/frontend/node_modules packages/backend/node_modules packages/common/node_modules",
+=======
+    "cleanup": "rm -rf packages/frontend/build packages/backend/build packages/common/build node_modules packages/frontend/node_modules packages/backend/node_modules packages/common/node_modules"
+>>>>>>> 8eedae12bd89f97292549ac25ad12229d025b7f8
     "test": "scripts/test.sh"
   }
 }

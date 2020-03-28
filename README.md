@@ -17,7 +17,13 @@ yarn start:backend
 yarn start:frontend
 ```
 
-<<<<<<< HEAD
+### Terminal 3 - Node
+```
+./target/debug/polkadot --dev --telemetry-url ws://localhost:1024
+```
+
+Now navigate to localhost:3000 in your browser to view the app.
+
 ### Use docker image
 
 ```
@@ -31,7 +37,6 @@ docker run --name polkadot-telemetry-frontend -p 3000:3000 --rm -d chevdor/polka
 ```
 docker build -t chevdor/polkadot-telemetry:latest .
 ```
-=======
 ### Terminal 3 - Node
 ```
 ./target/debug/polkadot --dev --telemetry-url ws://localhost:1024
@@ -48,4 +53,4 @@ docker-compose up --build -d
   - If you want to makes UI changes, there is no need to rebuild the image as the files are being copied in via volumes.
   
 Now navigate to localhost:3000 in your browser to view the app.
->>>>>>> 7add77137ae6c4f599c1774158883d58d134bdc6
+
